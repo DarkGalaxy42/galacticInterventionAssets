@@ -1,0 +1,932 @@
+using System;
+using UnityEngine;
+
+public class map : MonoBehaviour
+{
+    [SerializeField] private GameObject mapPlayerPrefab;
+    [SerializeField] private GameObject mapEncounterPrefab;
+    [SerializeField] private GameObject mapConnectorPrefab;
+    [SerializeField] private GameObject mapEnemyPrefab;
+    [SerializeField] private Camera mapCamera;
+    [SerializeField] private GameObject player;
+    [SerializeField] private float mapDistance;
+    private GameObject enemy;
+    private gameManager managerScript;
+    private Vector3 cameraCenter, verticalStep, horizontalStep, randomDistance;
+    private float mapStep, cameraPlaneWidth, cameraPlaneHeight;
+    public int amountInRow, amountInColumn;
+    private int xCoord, yCoord, distanceFromCenter;
+    string[] encounterCoords;
+    string[] connectorCoords;
+    int[] encounterCoordsParsed;
+    int[] encounterCoordsParsedForConnection;
+    int[] connectorCoordsParsed;
+    int[,] encounterInGrid;
+
+    int[] playerMapCoords;
+    int[] encounterMapCoords;
+    private Vector2 playerStartPos;
+    private bool waitingForDeath;
+    private bool flag;
+    private int[,] connectorArr;
+    const float randomDistanceMin = -15;
+    const float randomDistanceMax = 15;
+    const int connectorArrChildCount = 5;
+    // Start is called before the first frame update
+    void Start()
+    {
+        managerScript = GameObject.FindWithTag("GameController").GetComponent<gameManager>();
+        InitializeVariables();
+
+        GenerateEncounters();
+        ConnectNodes();
+    }
+
+    void InitializeVariables()
+    {
+        // Initialize player's map coordinates to 0
+        playerMapCoords = new int[2];
+        encounterMapCoords = new int[2];
+
+        mapStep = 5.5f;
+        cameraPlaneWidth = mapCamera.ViewportToWorldPoint(new Vector3(1f, 0f, mapDistance)).x;
+        cameraPlaneHeight = mapCamera.ViewportToWorldPoint(new Vector3(0f, 1f, mapDistance)).y;
+        cameraCenter = mapCamera.ViewportToWorldPoint(new Vector3(0.5f, 0.5f, mapDistance));
+        verticalStep = new Vector3(0f, mapStep, 0);
+        horizontalStep = new Vector3(mapStep, 0f, 0);
+
+        CalculateAmountsInRowAndColumn();
+
+        encounterInGrid = new int[amountInRow, amountInColumn];
+        encounterCoords = new string[2];
+        encounterCoordsParsed = new int[2];
+        connectorCoords = new string[4];
+        connectorCoordsParsed = new int[4];
+        encounterCoordsParsedForConnection = new int[2];
+    }
+
+    void CalculateAmountsInRowAndColumn()
+    {
+        // Adjusting the number of rows and columns to ensure they are odd
+        amountInRow = (int) (Mathf.Abs((mapCamera.ViewportToWorldPoint(new Vector3(1f, 0f, mapDistance)).x * 2)) / mapStep);
+        amountInColumn = (int) (Mathf.Abs((mapCamera.ViewportToWorldPoint(new Vector3(0f, 1f, mapDistance)).y * 2)) / mapStep);
+
+        if (amountInRow % 2 == 0) amountInRow -= 1;
+        else amountInRow -= 2;
+
+        if (amountInColumn % 2 == 0) amountInColumn -= 1;
+        else amountInColumn -= 2;
+    }
+
+    void GenerateEncounters()
+    {
+        // Loop through each grid point in our map and generate an encounter
+        for (int i = 0; i < amountInRow; i++)
+        {
+            for (int j = 0; j < amountInColumn; j++)
+            {
+                Vector3 randomDistance = new Vector3(0f, 0f, UnityEngine.Random.Range(randomDistanceMin, randomDistanceMax));
+                
+                // Generate a random distance within the set range for each encounter
+                int xCoord = -(amountInRow - 1) / 2 + i;
+                int yCoord = -(amountInColumn - 1) / 2 + j;
+
+                Vector3 encounterPosition = cameraCenter + horizontalStep * (i + 1) - horizontalStep * ((amountInRow + 1) / 2) + verticalStep * (j + 1) - verticalStep * ((amountInColumn + 1) / 2) + randomDistance;
+
+                GameObject generatedEncounter = Instantiate(mapEncounterPrefab, encounterPosition, Quaternion.identity, this.gameObject.transform);
+                generatedEncounter.name = $"Encounter {xCoord} {yCoord}";
+
+                // Instantiate enemy or player prefab based on the coordinates. If the coordinates are the origin (0,0), instantiate the player icon. Else, instantiate the enemy icon.
+                if ((xCoord != 0) || (yCoord != 0))
+                {
+                    Instantiate(mapEnemyPrefab, encounterPosition, Quaternion.identity, generatedEncounter.transform);
+                } else {
+                    Instantiate(mapPlayerPrefab, encounterPosition, Quaternion.identity, generatedEncounter.transform);
+                }
+
+                encounterInGrid[xCoord + ((amountInRow - 1) / 2), yCoord + ((amountInColumn - 1) / 2)] = 1;
+            }
+        }
+
+        ProcessEncounters();
+    }
+
+    void ProcessEncounters()
+    {
+        // Process all encounters and destroy unnecessary ones
+        for (int i = 0; i < this.gameObject.transform.childCount; i++)
+        {
+            string encounterName = transform.GetChild(i).gameObject.name;
+            encounterCoords = (encounterName[0] == 'P') ? encounterName.Substring(7).Split(" ") : encounterName.Substring(10).Split(" ");
+
+            encounterCoordsParsed[0] = Int32.Parse(encounterCoords[0]);
+            encounterCoordsParsed[1] = Int32.Parse(encounterCoords[1]);
+
+            int distanceFromCenter = Mathf.RoundToInt(new Vector2(encounterCoordsParsed[0], encounterCoordsParsed[1]).magnitude);
+            encounterInGrid[encounterCoordsParsed[0] + ((amountInRow - 1) / 2), encounterCoordsParsed[1] + ((amountInColumn - 1) / 2)] = -1;
+
+            // If the encounter is not at the origin and passes the DFS check and the random check, destroy the game object. Else, mark it as an active encounter.
+            if ((encounterCoordsParsed[0] != 0 || encounterCoordsParsed[1] != 0) && (DFS(((amountInRow - 1) / 2), ((amountInColumn - 1) / 2))) && (UnityEngine.Random.Range(0, Mathf.Pow(distanceFromCenter, 2)) > 2))
+            {
+                Destroy(transform.GetChild(i).gameObject);
+            } else {
+                encounterInGrid[encounterCoordsParsed[0] + ((amountInRow - 1) / 2), encounterCoordsParsed[1] + ((amountInColumn - 1) / 2)] = 1;
+            }
+
+            ResetEncounterGrid();
+        }
+    }
+
+    void ResetEncounterGrid()
+    {
+        // Reset the encounter grid to all active encounters
+        for (int j = 0; j < amountInRow; j++)
+        {
+            for (int k = 0; k < amountInColumn; k++)
+            {
+                if (encounterInGrid[j, k] != -1)
+                {
+                    encounterInGrid[j, k] = 1;
+                }
+            }
+        }
+    }
+
+    void ConnectNodes()
+    {
+        // Connect all nodes and remove random connectors
+        Connector();
+        connectorArr = new int[transform.childCount, connectorArrChildCount];
+        RemoveRandomConnectors();
+    }
+    // DFS or Depth-First Search is an algorithm for traversing or searching tree or graph data structures. 
+    // This implementation is used to find if there is a path in the grid from start position to any unvisited node.
+    bool DFS(int startX, int startY)
+    {
+        int[] nextCoord = new int[2];
+
+        // Mark the start node as visited
+        encounterInGrid[startX, startY] = 0;
+
+        // Get the next unvisited node
+        nextCoord = UnvisitedNeighbour(startX, startY);
+
+        // Keep searching for unvisited nodes until there are none left
+        while (!((nextCoord[0] == -1) && (nextCoord[1] == -1)))
+        {
+            DFS(nextCoord[0], nextCoord[1]);
+
+            nextCoord = UnvisitedNeighbour(startX, startY);
+        }
+
+        // If any node is still unvisited, return false
+        for (int j = 0; j < amountInRow; j++)
+        {
+            for (int k = 0; k < amountInColumn; k++)
+            {
+                if (encounterInGrid[j, k] == 1)
+                {
+                    return false;
+                }
+            }
+        }
+
+        // If all nodes are visited, return true
+        return true;
+    }
+
+    // UnvisitedNeighbour checks for unvisited nodes in the grid.
+    int[] UnvisitedNeighbour(int currentX, int currentY)
+    {
+        int[] result = new int[2];
+
+        // Search right of the current node
+        for (int i = currentX + 1; i < amountInRow; i++)
+        {
+            if (encounterInGrid[i, currentY] == 0)
+            {
+                break;
+            }
+            
+            if (encounterInGrid[i, currentY] == 1)
+            {
+                result[0] = i;
+                result[1] = currentY;
+
+                return result;
+            }
+        }
+
+        // Search left of the current node
+        for (int i = currentX - 1; i >= 0; i--)
+        {
+            if (encounterInGrid[i, currentY] == 0)
+            {
+                break;
+            }
+
+            if (encounterInGrid[i, currentY] == 1)
+            {
+                result[0] = i;
+                result[1] = currentY;
+
+                return result;
+            }
+        }
+
+        // Search below the current node
+        for (int i = currentY + 1; i < amountInColumn; i++)
+        {
+            if (encounterInGrid[currentX, i] == 0)
+            {
+                break;
+            }
+
+            if (encounterInGrid[currentX, i] == 1)
+            {
+                result[0] = currentX;
+                result[1] = i;
+
+                return result;
+            }
+        }
+
+        // Search above the current node
+        for (int i = currentY - 1; i >= 0; i--)
+        {
+            if (encounterInGrid[currentX, i] == 0)
+            {
+                break;
+            }
+
+            if (encounterInGrid[currentX, i] == 1)
+            {
+                result[0] = currentX;
+                result[1] = i;
+
+                return result;
+            }
+        }
+
+        // If no unvisited neighbour is found, return -1 for both coordinates
+        result[0] = -1;
+        result[1] = -1;
+
+        return result;
+    } 
+
+    void Connect(int SX, int SY, int EX, int EY)
+    {
+        Vector3 worldS, worldE;
+
+        // Initialize the world coordinates for start and end points
+        worldS = new Vector3(0f, 0f, 0f);
+        worldE = new Vector3(0f, 0f, 0f);
+
+        SX -= (amountInRow - 1) / 2;
+        SY -= (amountInColumn - 1) / 2;
+        EX -= (amountInRow - 1) / 2;
+        EY -= (amountInColumn - 1) / 2;
+
+        // Iterate over all child objects of the current object
+        for (int i = 0; i < this.gameObject.transform.childCount; i++)
+        {
+            if (transform.GetChild(i).gameObject.name[0] == 'P')
+            {
+                encounterCoords = transform.GetChild(i).gameObject.name.Substring(7).Split(" ");
+            } else {
+                encounterCoords = transform.GetChild(i).gameObject.name.Substring(10).Split(" ");
+            }
+
+            // Break if the first character of the name is 'M' or 'C'
+            if ((transform.GetChild(i).gameObject.name[0] == 'M') || (transform.GetChild(i).gameObject.name[0] == 'C'))
+            {
+                break;
+            }
+
+            // Parse the extracted coordinates to integers
+            encounterCoordsParsed[0] = Int32.Parse(encounterCoords[0]);
+            encounterCoordsParsed[1] = Int32.Parse(encounterCoords[1]);
+
+            // If the parsed coordinates match the start or end point, store the world position
+            if ((encounterCoordsParsed[0] == SX) && (encounterCoordsParsed[1] == SY))
+            {
+                worldS = transform.GetChild(i).gameObject.transform.position;
+            }
+
+            if ((encounterCoordsParsed[0] == EX) && (encounterCoordsParsed[1] == EY))
+            {
+                worldE = transform.GetChild(i).gameObject.transform.position;
+            }
+        }
+
+        // Instantiate a new connector at the midpoint between the start and end points
+        GameObject generatedConnector = Instantiate(mapConnectorPrefab, new Vector3((worldS.x + worldE.x) / 2, (worldS.y + worldE.y) / 2, (worldS.z + worldE.z) / 2), Quaternion.identity, this.gameObject.transform);
+        Vector3 scale = generatedConnector.transform.localScale;
+
+        // Adjust the rotation and scale of the connector based on the relative positions of the start and end points
+        if ((SX - EX) == 0)
+        {
+            if (worldS.y < worldE.y)
+            {
+                if (worldS.z < worldE.z)
+                {
+                    generatedConnector.transform.rotation = Quaternion.Euler(Mathf.Acos((new Vector2(worldS.x, worldS.y) - new Vector2(worldE.x, worldE.y)).magnitude/(worldE - worldS).magnitude)/0.017453f, 0f, 0f);
+                } else {
+                    generatedConnector.transform.rotation = Quaternion.Euler(-Mathf.Acos((new Vector2(worldS.x, worldS.y) - new Vector2(worldE.x, worldE.y)).magnitude/(worldE - worldS).magnitude)/0.017453f, 0f, 0f);
+                }
+            } else {
+                if (worldS.z < worldE.z)
+                {
+                    generatedConnector.transform.rotation = Quaternion.Euler(-Mathf.Acos((new Vector2(worldS.x, worldS.y) - new Vector2(worldE.x, worldE.y)).magnitude/(worldE - worldS).magnitude)/0.017453f, 0f, 0f);
+                } else {
+                    generatedConnector.transform.rotation = Quaternion.Euler(Mathf.Acos((new Vector2(worldS.x, worldS.y) - new Vector2(worldE.x, worldE.y)).magnitude/(worldE - worldS).magnitude)/0.017453f, 0f, 0f);
+                }
+            }
+        } else {
+            if (worldS.x < worldE.x)
+            {
+                if (worldS.z < worldE.z)
+                {
+                    generatedConnector.transform.rotation = Quaternion.Euler(0f, -Mathf.Acos((new Vector2(worldS.x, worldS.y) - new Vector2(worldE.x, worldE.y)).magnitude/(worldE - worldS).magnitude)/0.017453f, 90f);
+                } else {
+                    generatedConnector.transform.rotation = Quaternion.Euler(0f, Mathf.Acos((new Vector2(worldS.x, worldS.y) - new Vector2(worldE.x, worldE.y)).magnitude/(worldE - worldS).magnitude)/0.017453f, 90f);
+                }
+            } else {
+                if (worldS.z < worldE.z)
+                {
+                    generatedConnector.transform.rotation = Quaternion.Euler(0f, Mathf.Acos((new Vector2(worldS.x, worldS.y) - new Vector2(worldE.x, worldE.y)).magnitude/(worldE - worldS).magnitude)/0.017453f, 90f);
+                } else {
+                    generatedConnector.transform.rotation = Quaternion.Euler(0f, -Mathf.Acos((new Vector2(worldS.x, worldS.y) - new Vector2(worldE.x, worldE.y)).magnitude/(worldE - worldS).magnitude)/0.017453f, 90f);
+                }
+            }
+        }
+        scale.y = (worldE - worldS).magnitude - 4f / ((new Vector2(worldS.x, worldS.y) - new Vector2(worldE.x, worldE.y)).magnitude/(worldE - worldS).magnitude);
+        generatedConnector.transform.localScale = scale;
+
+        // Name the connector based on its start and end coordinates
+        generatedConnector.name = string.Concat(string.Concat(string.Concat(string.Concat(string.Concat(string.Concat("Connector ", SX.ToString()), " "), SY.ToString()), " "), EX.ToString(), " "), EY.ToString());
+    }
+
+    void Connector()
+    {
+        int[] nextCoord = new int[2];
+
+        for (int i = 0; i < transform.childCount; i++)
+        {
+            if (transform.GetChild(i).gameObject.name[0] == 'E')
+            {
+                encounterCoords = transform.GetChild(i).gameObject.name.Substring(10).Split(" ");
+
+                encounterCoordsParsedForConnection[0] = Int32.Parse(encounterCoords[0]) + ((amountInRow - 1) / 2);
+                encounterCoordsParsedForConnection[1] = Int32.Parse(encounterCoords[1]) + ((amountInColumn - 1) / 2);
+
+                if (encounterInGrid[encounterCoordsParsedForConnection[0], encounterCoordsParsedForConnection[1]] != -1)
+                {
+                    nextCoord = Neighbour(encounterCoordsParsedForConnection[0], encounterCoordsParsedForConnection[1]);
+
+                    while (!((nextCoord[0] == -1) && (nextCoord[1] == -1)))
+                    {
+                        Connect(encounterCoordsParsedForConnection[0], encounterCoordsParsedForConnection[1], nextCoord[0], nextCoord[1]);
+                        nextCoord = Neighbour(encounterCoordsParsedForConnection[0], encounterCoordsParsedForConnection[1]);
+                    }
+                }
+            }
+        }
+    }
+
+    int[] Neighbour(int currentX, int currentY)
+    {
+        int[] result = new int[2];
+
+        for (int i = currentX + 1; i < amountInRow; i++)
+        {
+            flag = true;
+
+            if (encounterInGrid[i, currentY] != -1)
+            {
+                for (int j = 0; j < this.gameObject.transform.childCount; j++)
+                {
+                    if (transform.GetChild(j).gameObject.name[0] == 'C')
+                    {
+                        connectorCoords = transform.GetChild(j).gameObject.name.Substring(10).Split(" ");
+                        connectorCoordsParsed[0] = Int32.Parse(connectorCoords[0]) + ((amountInRow - 1) / 2);
+                        connectorCoordsParsed[1] = Int32.Parse(connectorCoords[1]) + ((amountInColumn - 1) / 2);
+                        connectorCoordsParsed[2] = Int32.Parse(connectorCoords[2]) + ((amountInRow - 1) / 2);
+                        connectorCoordsParsed[3] = Int32.Parse(connectorCoords[3]) + ((amountInColumn - 1) / 2);
+                    }
+
+                    if (((connectorCoordsParsed[0] == currentX) && (connectorCoordsParsed[1] == currentY) && (connectorCoordsParsed[2] == i) && (connectorCoordsParsed[3] == currentY)) || ((connectorCoordsParsed[2] == currentX) && (connectorCoordsParsed[3] == currentY) && (connectorCoordsParsed[0] == i) && (connectorCoordsParsed[1] == currentY)))
+                    {
+                        flag = false;
+                        break;
+                    }
+                }
+
+                if (!flag)
+                {
+                    break;
+                }
+
+                result[0] = i;
+                result[1] = currentY;
+
+                return result;
+            }
+        }
+
+        for (int i = currentX - 1; i >= 0; i--)
+        {
+            flag = true;
+
+            if (encounterInGrid[i, currentY] != -1)
+            {
+                for (int j = 0; j < this.gameObject.transform.childCount; j++)
+                {
+                    if (transform.GetChild(j).gameObject.name[0] == 'C')
+                    {
+                        connectorCoords = transform.GetChild(j).gameObject.name.Substring(10).Split(" ");
+                        connectorCoordsParsed[0] = Int32.Parse(connectorCoords[0]) + ((amountInRow - 1) / 2);
+                        connectorCoordsParsed[1] = Int32.Parse(connectorCoords[1]) + ((amountInColumn - 1) / 2);
+                        connectorCoordsParsed[2] = Int32.Parse(connectorCoords[2]) + ((amountInRow - 1) / 2);
+                        connectorCoordsParsed[3] = Int32.Parse(connectorCoords[3]) + ((amountInColumn - 1) / 2);
+
+                        if (((connectorCoordsParsed[0] == currentX) && (connectorCoordsParsed[1] == currentY) && (connectorCoordsParsed[2] == i) && (connectorCoordsParsed[3] == currentY)) || ((connectorCoordsParsed[2] == currentX) && (connectorCoordsParsed[3] == currentY) && (connectorCoordsParsed[0] == i) && (connectorCoordsParsed[1] == currentY)))
+                        {
+                            flag = false;
+                            break;
+                        }
+                    }
+                }
+
+                if (!flag)
+                {
+                    break;
+                }
+
+                result[0] = i;
+                result[1] = currentY;
+                    
+                return result;
+            }
+        }
+
+        for (int i = currentY + 1; i < amountInColumn; i++)
+        {
+            flag = true;
+
+            if (encounterInGrid[currentX, i] != -1)
+            {
+                for (int j = 0; j < this.gameObject.transform.childCount; j++)
+                {
+                    if (transform.GetChild(j).gameObject.name[0] == 'C')
+                    {
+                        connectorCoords = transform.GetChild(j).gameObject.name.Substring(10).Split(" ");
+                        connectorCoordsParsed[0] = Int32.Parse(connectorCoords[0]) + ((amountInRow - 1) / 2);
+                        connectorCoordsParsed[1] = Int32.Parse(connectorCoords[1]) + ((amountInColumn - 1) / 2);
+                        connectorCoordsParsed[2] = Int32.Parse(connectorCoords[2]) + ((amountInRow - 1) / 2);
+                        connectorCoordsParsed[3] = Int32.Parse(connectorCoords[3]) + ((amountInColumn - 1) / 2);
+
+                        if (((connectorCoordsParsed[0] == currentX) && (connectorCoordsParsed[1] == currentY) && (connectorCoordsParsed[2] == currentX) && (connectorCoordsParsed[3] == i)) || ((connectorCoordsParsed[2] == currentX) && (connectorCoordsParsed[3] == currentY) && (connectorCoordsParsed[0] == currentX) && (connectorCoordsParsed[1] == i)))
+                        {
+                            flag = false;
+                            break;
+                        }
+                    }
+                }
+
+                if (!flag)
+                {
+                    break;
+                }
+
+                result[0] = currentX;
+                result[1] = i;
+                    
+                return result;
+            }
+        }
+
+        for (int i = currentY - 1; i >= 0; i--)
+        {
+            flag = true;
+
+            if (encounterInGrid[currentX, i] != -1)
+            {
+                for (int j = 0; j < this.gameObject.transform.childCount; j++)
+                {
+                    if (transform.GetChild(j).gameObject.name[0] == 'C')
+                    {
+                        connectorCoords = transform.GetChild(j).gameObject.name.Substring(10).Split(" ");
+                        connectorCoordsParsed[0] = Int32.Parse(connectorCoords[0]) + ((amountInRow - 1) / 2);
+                        connectorCoordsParsed[1] = Int32.Parse(connectorCoords[1]) + ((amountInColumn - 1) / 2);
+                        connectorCoordsParsed[2] = Int32.Parse(connectorCoords[2]) + ((amountInRow - 1) / 2);
+                        connectorCoordsParsed[3] = Int32.Parse(connectorCoords[3]) + ((amountInColumn - 1) / 2);
+
+                        if (((connectorCoordsParsed[0] == currentX) && (connectorCoordsParsed[1] == currentY) && (connectorCoordsParsed[2] == currentX) && (connectorCoordsParsed[3] == i)) || ((connectorCoordsParsed[2] == currentX) && (connectorCoordsParsed[3] == currentY) && (connectorCoordsParsed[0] == currentX) && (connectorCoordsParsed[1] == i)))
+                        {
+                            flag = false;
+                            break;
+                        }
+                    }
+                }
+
+                if (!flag)
+                {
+                    break;
+                }
+
+                result[0] = currentX;
+                result[1] = i;
+                    
+                return result;
+            }
+        }
+
+        result[0] = -1;
+        result[1] = -1;
+
+        return result;
+    }
+
+    void RemoveRandomConnectors()
+    {
+        for (int i = 0; i < amountInRow; i++)
+        {
+            for (int j = 0; j < amountInColumn; j++)
+            {
+                if (encounterInGrid[i, j] != -1)
+                {
+                    encounterInGrid[i, j] = 1;
+                }
+            }
+        }
+
+        for (int i = 0; i < transform.childCount; i++)
+        {
+            if (transform.GetChild(i).gameObject.name[0] == 'C')
+            {
+                connectorCoords = transform.GetChild(i).gameObject.name.Substring(10).Split(" ");
+                connectorCoordsParsed[0] = Int32.Parse(connectorCoords[0]) + ((amountInRow - 1) / 2);
+                connectorCoordsParsed[1] = Int32.Parse(connectorCoords[1]) + ((amountInColumn - 1) / 2);
+                connectorCoordsParsed[2] = Int32.Parse(connectorCoords[2]) + ((amountInRow - 1) / 2);
+                connectorCoordsParsed[3] = Int32.Parse(connectorCoords[3]) + ((amountInColumn - 1) / 2);
+
+                connectorArr[i, 0] = connectorCoordsParsed[0];
+                connectorArr[i, 1] = connectorCoordsParsed[1];
+                connectorArr[i, 2] = connectorCoordsParsed[2];
+                connectorArr[i, 3] = connectorCoordsParsed[3];
+                connectorArr[i, 4] = 1;
+            }
+        }
+
+        for (int i = 0; i < this.gameObject.transform.childCount; i++)
+        {
+            if (transform.GetChild(i).gameObject.name[0] == 'C')
+            {
+                connectorCoords = transform.GetChild(i).gameObject.name.Substring(10).Split(" ");
+                connectorCoordsParsed[0] = Int32.Parse(connectorCoords[0]) + ((amountInRow - 1) / 2);
+                connectorCoordsParsed[1] = Int32.Parse(connectorCoords[1]) + ((amountInColumn - 1) / 2);
+                connectorCoordsParsed[2] = Int32.Parse(connectorCoords[2]) + ((amountInRow - 1) / 2);
+                connectorCoordsParsed[3] = Int32.Parse(connectorCoords[3]) + ((amountInColumn - 1) / 2);
+                connectorArr[i, 4] = 0;
+
+                if ((DFSConnectors(((amountInRow - 1) / 2), ((amountInColumn - 1) / 2))) && (UnityEngine.Random.Range(0, 10) > 7))
+                {
+                    Destroy(transform.GetChild(i).gameObject);
+                } else {
+                    connectorArr[i, 4] = 1; 
+                }
+
+                for (int j = 0; j < amountInRow; j++)
+                {
+                    for (int k = 0; k < amountInColumn; k++)
+                    {
+                        if (encounterInGrid[j, k] != -1)
+                        {
+                            encounterInGrid[j, k] = 1;
+                        }
+                    }
+                }
+
+            }
+        }    
+    }
+
+    bool DFSConnectors(int startX, int startY)
+    {
+        int[] nextCoord = new int[2];
+
+        encounterInGrid[startX, startY] = 0;
+        nextCoord = UnvisitedNeighbourWithConnector(startX, startY);
+
+        while (!((nextCoord[0] == -1) && (nextCoord[1] == -1)))
+        {
+            DFSConnectors(nextCoord[0], nextCoord[1]);
+
+            nextCoord = UnvisitedNeighbourWithConnector(startX, startY);
+        }
+
+        for (int j = 0; j < amountInRow; j++)
+        {
+            for (int k = 0; k < amountInColumn; k++)
+            {
+                if (encounterInGrid[j, k] == 1)
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    int[] UnvisitedNeighbourWithConnector(int currentX, int currentY)
+    {
+        int[] result = new int[2];
+
+        for (int i = currentX + 1; i < amountInRow; i++)
+        {
+            flag = true;
+
+            if (encounterInGrid[i, currentY] == 0)
+            {
+                break;
+            }
+            
+            if (encounterInGrid[i, currentY] == 1)
+            {
+                for (int j = 0; j < this.gameObject.transform.childCount; j++)
+                {
+                    if ((((connectorArr[j, 0] == currentX) && (connectorArr[j, 1] == currentY) && (connectorArr[j, 2] == i) && (connectorArr[j, 3] == currentY)) || ((connectorArr[j, 2] == currentX) && (connectorArr[j, 3] == currentY) && (connectorArr[j, 0] == i) && (connectorArr[j, 1] == currentY))) && (connectorArr[j, 4] == 1))
+                    {
+                        flag = false;
+                        break;
+                    }
+                }
+
+                if (flag)
+                {
+                    break;
+                }
+
+                result[0] = i;
+                result[1] = currentY;
+
+                return result;
+            }
+        }
+
+        for (int i = currentX - 1; i >= 0; i--)
+        {
+            flag = true;
+
+            if (encounterInGrid[i, currentY] == 0)
+            {
+                break;
+            }
+
+            if (encounterInGrid[i, currentY] == 1)
+            {
+                for (int j = 0; j < this.gameObject.transform.childCount; j++)
+                {
+                    if ((((connectorArr[j, 0] == currentX) && (connectorArr[j, 1] == currentY) && (connectorArr[j, 2] == i) && (connectorArr[j, 3] == currentY)) || ((connectorArr[j, 2] == currentX) && (connectorArr[j, 3] == currentY) && (connectorArr[j, 0] == i) && (connectorArr[j, 1] == currentY))) && (connectorArr[j, 4] == 1))
+                    {
+                        flag = false;
+                        break;
+                    }
+                }
+
+                if (flag)
+                {
+                    break;
+                }
+
+                result[0] = i;
+                result[1] = currentY;
+
+                return result;
+            }
+        }
+
+        for (int i = currentY + 1; i < amountInColumn; i++)
+        {
+            flag = true;
+
+            if (encounterInGrid[currentX, i] == 0)
+            {
+                break;
+            }
+
+            if (encounterInGrid[currentX, i] == 1)
+            {
+                for (int j = 0; j < this.gameObject.transform.childCount; j++)
+                {
+                    if ((((connectorArr[j, 0] == currentX) && (connectorArr[j, 1] == currentY) && (connectorArr[j, 2] == currentX) && (connectorArr[j, 3] == i)) || ((connectorArr[j, 2] == currentX) && (connectorArr[j, 3] == currentY) && (connectorArr[j, 0] == currentX) && (connectorArr[j, 1] == i))) && (connectorArr[j, 4] == 1))
+                    {
+                        flag = false;
+                        break;
+                    }
+                }
+
+                if (flag)
+                {
+                    break;
+                }
+
+                result[0] = currentX;
+                result[1] = i;
+
+                return result;
+            }
+        }
+
+        for (int i = currentY - 1; i >= 0; i--)
+        {
+            flag = true;
+
+            if (encounterInGrid[currentX, i] == 0)
+            {
+                break;
+            }
+
+            if (encounterInGrid[currentX, i] == 1)
+            {
+                for (int j = 0; j < this.gameObject.transform.childCount; j++)
+                {
+                    if ((((connectorArr[j, 0] == currentX) && (connectorArr[j, 1] == currentY) && (connectorArr[j, 2] == currentX) && (connectorArr[j, 3] == i)) || ((connectorArr[j, 2] == currentX) && (connectorArr[j, 3] == currentY) && (connectorArr[j, 0] == currentX) && (connectorArr[j, 1] == i))) && (connectorArr[j, 4] == 1))
+                    {
+                        flag = false;
+                        break;
+                    }
+                }
+
+                if (flag)
+                {
+                    break;
+                }
+
+                result[0] = currentX;
+                result[1] = i;
+
+                return result;
+            }
+        }
+
+        result[0] = -1;
+        result[1] = -1;
+
+        return result;
+    }
+
+    void Update()
+    {
+        if ((player.transform.position.x > playerStartPos.x + 40f) && (!waitingForDeath))
+        {
+            playerStartPos = player.transform.position;
+
+            for (int i = 1; i <= (amountInRow - 1) / 2; i++)
+            { 
+                if ((transform.Find("Encounter " + (playerMapCoords[0] - i) + " " + playerMapCoords[1])) && ((transform.Find("Connector " + (playerMapCoords[0] - i) + " " + playerMapCoords[1] + " " + playerMapCoords[0] + " " + playerMapCoords[1])) || (transform.Find("Connector " + playerMapCoords[0] + " " + playerMapCoords[1] + " " + (playerMapCoords[0] - i) + " " + playerMapCoords[1]))))
+                {
+                    waitingForDeath = true;
+                    encounterMapCoords[0] = playerMapCoords[0] - i;
+                    encounterMapCoords[1] = playerMapCoords[1];
+
+                    Transform previousEncounter = transform.Find(string.Concat(string.Concat(string.Concat("Encounter ", playerMapCoords[0].ToString()), " "), playerMapCoords[1].ToString()));
+                    GameObject nextEncounter = transform.Find(string.Concat(string.Concat(string.Concat("Encounter ", encounterMapCoords[0].ToString()), " "), encounterMapCoords[1].ToString())).gameObject;
+
+                    if (nextEncounter.transform.childCount != 0)
+                    {
+                        enemy = managerScript.Spawn();
+                    }
+
+                    foreach (Transform child in previousEncounter)
+                    {
+                        Destroy(child.gameObject);
+                    }
+                    if (nextEncounter.transform.childCount != 0)
+                    {
+                        Destroy(nextEncounter.transform.GetChild(0).gameObject);
+                    }
+                    GameObject generatedPlayer = Instantiate(mapPlayerPrefab, nextEncounter.transform.position, Quaternion.identity, nextEncounter.transform);
+
+                    break;
+                }
+            }
+        }
+
+        if ((player.transform.position.x < playerStartPos.x - 40f) && (!waitingForDeath))
+        {
+            playerStartPos = player.transform.position;
+
+            for (int i = 1; i <= (amountInRow - 1) / 2; i++)
+            {
+                if ((transform.Find("Encounter " + (playerMapCoords[0] + i) + " " + playerMapCoords[1])) && ((transform.Find("Connector " + (playerMapCoords[0] + i) + " " + playerMapCoords[1] + " " + playerMapCoords[0] + " " + playerMapCoords[1])) || (transform.Find("Connector " + playerMapCoords[0] + " " + playerMapCoords[1] + " " + (playerMapCoords[0] + i) + " " + playerMapCoords[1]))))
+                {
+                    waitingForDeath = true;
+                    encounterMapCoords[0] = playerMapCoords[0] + i;
+                    encounterMapCoords[1] = playerMapCoords[1];
+
+                    Transform previousEncounter = transform.Find(string.Concat(string.Concat(string.Concat("Encounter ", playerMapCoords[0].ToString()), " "), playerMapCoords[1].ToString()));
+                    GameObject nextEncounter = transform.Find(string.Concat(string.Concat(string.Concat("Encounter ", encounterMapCoords[0].ToString()), " "), encounterMapCoords[1].ToString())).gameObject;
+
+                    if (nextEncounter.transform.childCount != 0)
+                    {
+                        enemy = managerScript.Spawn();
+                    }
+
+                    foreach (Transform child in previousEncounter)
+                    {
+                        Destroy(child.gameObject);
+                    }
+                    if (nextEncounter.transform.childCount != 0)
+                    {
+                        Destroy(nextEncounter.transform.GetChild(0).gameObject);
+                    }
+                    GameObject generatedPlayer = Instantiate(mapPlayerPrefab, nextEncounter.transform.position, Quaternion.identity, nextEncounter.transform);
+
+                    break;
+                }
+            }
+        }
+
+        if ((player.transform.position.y > playerStartPos.y + 40f) && (!waitingForDeath))
+        {
+            playerStartPos = player.transform.position;
+
+            for (int i = 1; i <= (amountInColumn - 1) / 2; i++)
+            {
+                if ((transform.Find("Encounter " + playerMapCoords[0] + " " + (playerMapCoords[1] + i))) && ((transform.Find("Connector " + playerMapCoords[0] + " " + (playerMapCoords[1] + i) + " " + playerMapCoords[0] + " " + playerMapCoords[1])) || (transform.Find("Connector " + playerMapCoords[0] + " " + playerMapCoords[1] + " " + playerMapCoords[0] + " " + (playerMapCoords[1] + i)))))
+                {
+                    waitingForDeath = true;
+                    encounterMapCoords[0] = playerMapCoords[0];
+                    encounterMapCoords[1] = playerMapCoords[1] + i;
+
+                    Transform previousEncounter = transform.Find(string.Concat(string.Concat(string.Concat("Encounter ", playerMapCoords[0].ToString()), " "), playerMapCoords[1].ToString()));
+                    GameObject nextEncounter = transform.Find(string.Concat(string.Concat(string.Concat("Encounter ", encounterMapCoords[0].ToString()), " "), encounterMapCoords[1].ToString())).gameObject;
+
+                    if (nextEncounter.transform.childCount != 0)
+                    {
+                        enemy = managerScript.Spawn();
+                    }
+
+                    foreach (Transform child in previousEncounter)
+                    {
+                        Destroy(child.gameObject);
+                    }
+                    if (nextEncounter.transform.childCount != 0)
+                    {
+                        Destroy(nextEncounter.transform.GetChild(0).gameObject);
+                    }
+                    GameObject generatedPlayer = Instantiate(mapPlayerPrefab, nextEncounter.transform.position, Quaternion.identity, nextEncounter.transform);
+
+                    break;
+                }
+            }
+        }
+
+        if ((player.transform.position.y < playerStartPos.y - 40f) && (!waitingForDeath))
+        {
+            playerStartPos = player.transform.position;
+            
+            for (int i = 1; i <= (amountInColumn - 1) / 2; i++)
+            {
+                if ((transform.Find("Encounter " + playerMapCoords[0] + " " + (playerMapCoords[1] - i))) && ((transform.Find("Connector " + playerMapCoords[0] + " " + (playerMapCoords[1] - i) + " " + playerMapCoords[0] + " " + playerMapCoords[1])) || (transform.Find("Connector " + playerMapCoords[0] + " " + playerMapCoords[1] + " " + playerMapCoords[0] + " " + (playerMapCoords[1] - i)))))
+                {
+                    waitingForDeath = true;
+                    encounterMapCoords[0] = playerMapCoords[0];
+                    encounterMapCoords[1] = playerMapCoords[1] - i;
+
+                    Transform previousEncounter = transform.Find(string.Concat(string.Concat(string.Concat("Encounter ", playerMapCoords[0].ToString()), " "), playerMapCoords[1].ToString()));
+                    GameObject nextEncounter = transform.Find(string.Concat(string.Concat(string.Concat("Encounter ", encounterMapCoords[0].ToString()), " "), encounterMapCoords[1].ToString())).gameObject;
+
+                    if (nextEncounter.transform.childCount != 0)
+                    {
+                        enemy = managerScript.Spawn();
+                    }
+
+                    foreach (Transform child in previousEncounter)
+                    {
+                        Destroy(child.gameObject);
+                    }
+                    if (nextEncounter.transform.childCount != 0)
+                    {
+                        Destroy(nextEncounter.transform.GetChild(0).gameObject);
+                    }
+                    GameObject generatedPlayer = Instantiate(mapPlayerPrefab, nextEncounter.transform.position, Quaternion.identity, nextEncounter.transform);
+
+                    break;
+                }
+            }
+        }
+
+        if ((waitingForDeath == true) && (enemy == null))
+        {
+            playerMapCoords[0] = encounterMapCoords[0];
+            playerMapCoords[1] = encounterMapCoords[1];
+            playerStartPos = player.transform.position;
+            waitingForDeath = false;
+        }
+    }
+}
